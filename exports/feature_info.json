@@ -1,0 +1,12 @@
+{
+  "image_size": [
+    64,
+    64
+  ],
+  "n_clusters": 3,
+  "pca_components": 10,
+  "tfidf_max_features": 200,
+  "tfidf_approach": "item_id co-occurrence per outfit",
+  "visual_feature_dim": 76,
+  "covariance_type": "diag"
+}
