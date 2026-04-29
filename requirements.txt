@@ -1,7 +1,13 @@
 streamlit
+pandas
 numpy
-Pillow
-opencv-python-headless
+pillow
+opencv-python
 scikit-image
 scikit-learn
 joblib
+pyarrow
+fsspec
+huggingface_hub
+python-dotenv
+tqdm
