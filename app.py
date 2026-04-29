@@ -1,23 +1,13 @@
-# ============================================================
-# OUTFIT STYLE FINDER
-# Streamlit Deployment — GMM Clustering Model
-# ============================================================
-# Files required in the same folder as this app.py:
-#   gmm.pkl
-#   scaler.pkl
-#   pca.pkl
-#   tfidf.pkl
-#   feature_info.json
-#   cluster_results.json
-# ============================================================
-
-import io
 import json
+import random
 import joblib
 import numpy as np
 import streamlit as st
 from PIL import Image
 import cv2
+import os
+import pickle
+
 from skimage.feature import local_binary_pattern
 from skimage.color import rgb2gray
 
@@ -26,305 +16,590 @@ from skimage.color import rgb2gray
 # ============================================================
 
 st.set_page_config(
-    page_title="Outfit Style Finder",
-    page_icon="👗",
+    page_title="FitBoard",
+    page_icon="✦",
     layout="wide"
 )
 
 # ============================================================
-# LOAD MODELS — cached so they only load once per session
+# 🎨 CUSTOM CSS — Luxury Editorial Dark Mode
 # ============================================================
 
-@st.cache_resource
-def load_models():
-    gmm     = joblib.load("gmm.pkl")
-    scaler  = joblib.load("scaler.pkl")
-    pca     = joblib.load("pca.pkl")
-    tfidf   = joblib.load("tfidf.pkl")
-    with open("feature_info.json") as f:
-        info = json.load(f)
-    with open("cluster_results.json") as f:
-        cluster_results = json.load(f)
-    return gmm, scaler, pca, tfidf, info, cluster_results
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;1,400&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap');
 
-gmm, scaler, pca, tfidf, info, cluster_results = load_models()
-
-N_CLUSTERS = info["n_clusters"]
-IMAGE_SIZE = tuple(info["image_size"])
-
-# ============================================================
-# CLUSTER LABELS
-# Descriptive names for each cluster.
-# Update these after inspecting your cluster_outfit_samples.png
-# to give each cluster a meaningful style name.
-# ============================================================
-
-CLUSTER_LABELS = {
-    0: ("🌸 Soft & Feminine",    "Outfits with soft colors, floral patterns, and delicate accessories."),
-    1: ("🖤 Bold & Edgy",        "Dark tones, structured pieces, and statement accessories."),
-    2: ("☀️ Casual & Relaxed",   "Comfortable everyday wear with neutral or warm color palettes."),
+/* ── Root & Body ── */
+:root {
+    --bg:       #0c0c0e;
+    --surface:  #141416;
+    --surface2: #1c1c1f;
+    --border:   rgba(255,255,255,0.07);
+    --accent:   #e8c97a;
+    --accent2:  #c9a84c;
+    --text:     #f0ede8;
+    --muted:    #888680;
+    --tag-bg:   rgba(232,201,122,0.10);
 }
 
-# Fallback for N_CLUSTERS > 3
-for i in range(3, N_CLUSTERS):
-    CLUSTER_LABELS[i] = (f"✨ Style Group {i}", f"Cluster {i} outfits.")
+html, body,
+[data-testid="stAppViewContainer"],
+[data-testid="stApp"] {
+    background: var(--bg) !important;
+    color: var(--text) !important;
+    font-family: 'DM Sans', sans-serif !important;
+}
+
+[data-testid="stHeader"],
+[data-testid="stToolbar"],
+[data-testid="stDecoration"] { display: none !important; }
+
+/* scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
+
+/* ── Hero header ── */
+.hero-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 56px 0 32px;
+    position: relative;
+}
+.hero-wrap::before {
+    content: '';
+    position: absolute;
+    top: -80px; left: 50%; transform: translateX(-50%);
+    width: 560px; height: 280px;
+    background: radial-gradient(ellipse at center,
+        rgba(232,201,122,0.12) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.logo-lockup {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 12px;
+}
+.logo-icon {
+    width: 54px; height: 54px;
+    background: linear-gradient(135deg, #e8c97a 0%, #b8882e 100%);
+    border-radius: 15px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 26px;
+    box-shadow: 0 8px 28px rgba(232,201,122,0.40),
+                inset 0 1px 0 rgba(255,255,255,0.2);
+}
+.logo-wordmark {
+    font-family: 'Playfair Display', serif;
+    font-size: 48px;
+    font-weight: 700;
+    letter-spacing: -1.5px;
+    color: var(--text);
+    line-height: 1;
+}
+.logo-wordmark em {
+    color: var(--accent);
+    font-style: italic;
+}
+
+.hero-tagline {
+    font-size: 11px;
+    font-weight: 300;
+    letter-spacing: 4px;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+.hero-divider {
+    width: 40px; height: 1px;
+    background: linear-gradient(90deg,
+        transparent, var(--accent), transparent);
+    margin: 20px auto 0;
+}
+
+/* ── Section labels ── */
+.section-label {
+    font-size: 10px;
+    letter-spacing: 3.5px;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 40px 0 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.section-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+}
+
+/* ── Upload zone ── */
+[data-testid="stFileUploaderDropzone"] {
+    background: var(--surface) !important;
+    border: 1.5px dashed rgba(232,201,122,0.22) !important;
+    border-radius: 18px !important;
+    transition: border-color 0.2s, background 0.2s;
+}
+[data-testid="stFileUploaderDropzone"]:hover {
+    border-color: rgba(232,201,122,0.5) !important;
+    background: var(--surface2) !important;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] {
+    color: var(--muted) !important;
+}
+
+/* ── Outfit preview images ── */
+[data-testid="stImage"] img {
+    border-radius: 12px;
+    border: 1px solid var(--border);
+    transition: transform 0.3s;
+    width: 100%;
+}
+[data-testid="stImage"] img:hover { transform: scale(1.02); }
+
+/* ── Cluster badge ── */
+.cluster-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--tag-bg);
+    border: 1px solid rgba(232,201,122,0.18);
+    color: var(--accent);
+    font-size: 10.5px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    padding: 6px 16px;
+    border-radius: 100px;
+    margin: 14px 0 30px;
+}
+
+/* ── Outfit card ── */
+.outfit-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    margin-bottom: 20px;
+    overflow: hidden;
+    transition: transform 0.25s, box-shadow 0.25s, border-color 0.25s;
+    animation: fadeUp 0.4s ease both;
+}
+.outfit-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 24px 56px rgba(0,0,0,0.5);
+    border-color: rgba(232,201,122,0.2);
+}
+
+.outfit-card-header {
+    padding: 16px 18px 12px;
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+}
+.outfit-card-title {
+    font-family: 'Playfair Display', serif;
+    font-size: 15px;
+    font-style: italic;
+    color: var(--text);
+    line-height: 1.35;
+    margin: 0;
+}
+.outfit-card-num {
+    font-size: 9.5px;
+    letter-spacing: 1px;
+    color: var(--muted);
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 3px 8px;
+    white-space: nowrap;
+    margin-left: 8px;
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+/* ── Horizontal items strip ── */
+.items-strip {
+    display: flex;
+    flex-direction: row;
+    gap: 10px;
+    padding: 14px 16px 16px;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #2a2a2a transparent;
+}
+.items-strip::-webkit-scrollbar { height: 3px; }
+.items-strip::-webkit-scrollbar-thumb {
+    background: #2a2a2a; border-radius: 2px;
+}
+
+.item-tile {
+    flex: 0 0 auto;
+    width: 88px;
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+    align-items: center;
+}
+.item-tile img {
+    width: 88px !important;
+    height: 108px !important;
+    object-fit: cover;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    display: block;
+    transition: transform 0.2s;
+}
+.item-tile img:hover { transform: scale(1.04); }
+.item-tag {
+    font-size: 9px;
+    letter-spacing: 0.4px;
+    color: var(--muted);
+    text-align: center;
+    line-height: 1.3;
+    text-transform: capitalize;
+    width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ── Refresh button ── */
+.stButton > button {
+    background: linear-gradient(135deg, #e8c97a 0%, #b8882e 100%) !important;
+    color: #0c0c0e !important;
+    border: none !important;
+    border-radius: 100px !important;
+    padding: 10px 32px !important;
+    font-family: 'DM Sans', sans-serif !important;
+    font-size: 11.5px !important;
+    font-weight: 600 !important;
+    letter-spacing: 2.5px !important;
+    text-transform: uppercase !important;
+    cursor: pointer !important;
+    box-shadow: 0 4px 20px rgba(232,201,122,0.35) !important;
+    transition: opacity 0.2s, transform 0.2s !important;
+}
+.stButton > button:hover {
+    opacity: 0.88 !important;
+    transform: translateY(-2px) !important;
+}
+
+/* ── Streamlit info/warning overrides ── */
+[data-testid="stNotification"],
+.stAlert {
+    background: var(--surface2) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    color: var(--muted) !important;
+}
+
+/* ── Footer ── */
+.footer {
+    text-align: center;
+    font-size: 10px;
+    letter-spacing: 2.5px;
+    color: #2a2a2a;
+    text-transform: uppercase;
+    padding: 48px 0 28px;
+}
+
+/* ── Fade-up entrance ── */
+@keyframes fadeUp {
+    from { opacity: 0; transform: translateY(20px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ============================================================
-# FEATURE EXTRACTION — must match training exactly
+# FEATURE EXTRACTION
 # ============================================================
 
-def extract_color_features(img_rgb: np.ndarray) -> np.ndarray:
+def extract_color_features(img_rgb):
     hist_r = np.histogram(img_rgb[:, :, 0], bins=8, range=(0, 256))[0]
     hist_g = np.histogram(img_rgb[:, :, 1], bins=8, range=(0, 256))[0]
     hist_b = np.histogram(img_rgb[:, :, 2], bins=8, range=(0, 256))[0]
-    hist   = np.concatenate([hist_r, hist_g, hist_b]).astype(float)
+    hist = np.concatenate([hist_r, hist_g, hist_b]).astype(float)
     return hist / (hist.sum() + 1e-7)
 
-def extract_hsv_features(img_rgb: np.ndarray) -> np.ndarray:
+def extract_hsv_features(img_rgb):
     img_hsv = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2HSV)
     hist_h  = np.histogram(img_hsv[:, :, 0], bins=18, range=(0, 180))[0]
-    hist_s  = np.histogram(img_hsv[:, :, 1], bins=8,  range=(0, 256))[0]
-    hist    = np.concatenate([hist_h, hist_s]).astype(float)
+    hist_s  = np.histogram(img_hsv[:, :, 1], bins=8, range=(0, 256))[0]
+    hist = np.concatenate([hist_h, hist_s]).astype(float)
     return hist / (hist.sum() + 1e-7)
 
-def extract_texture_features(img_gray: np.ndarray) -> np.ndarray:
+def extract_texture_features(img_gray):
     lbp  = local_binary_pattern(img_gray, P=8, R=1, method='uniform')
     hist = np.histogram(lbp, bins=26, range=(0, 26))[0].astype(float)
     return hist / (hist.sum() + 1e-7)
 
-def extract_visual_features(pil_image: Image.Image) -> np.ndarray:
+def extract_visual_features(pil_image, IMAGE_SIZE):
     img_rgb  = np.array(pil_image.resize(IMAGE_SIZE))
     img_gray = rgb2gray(img_rgb)
     color    = extract_color_features(img_rgb)
     hsv      = extract_hsv_features(img_rgb)
     texture  = extract_texture_features(img_gray)
-    return np.concatenate([color, hsv, texture])   # 76-D
+    return np.concatenate([color, hsv, texture])
 
-def predict_cluster(images: list) -> tuple:
-    """
-    Given a list of PIL images (one per clothing item),
-    extract features, mean pool, combine with blank TF-IDF,
-    scale, reduce with PCA, and predict cluster with GMM.
-    Returns (cluster_id, confidence_scores_array).
-    """
-    # Extract visual features per item
-    item_feats = []
-    for img in images:
-        feat = extract_visual_features(img)
-        item_feats.append(feat)
+# ============================================================
+# LOAD DATA
+# ============================================================
 
-    # Mean pool all item features → one outfit vector
-    visual_vec = np.mean(item_feats, axis=0).reshape(1, -1)
+@st.cache_resource
+def load_data():
+    gmm     = joblib.load("gmm.pkl")
+    scaler  = joblib.load("scaler.pkl")
+    pca     = joblib.load("pca.pkl")
+    tfidf   = joblib.load("tfidf.pkl")
 
-    # TF-IDF: no item IDs available from user upload,
-    # so we pass a blank document — TF-IDF contributes zeros.
-    # The visual features carry the prediction.
+    with open("feature_info.json") as f:
+        info = json.load(f)
+
+    with open("final_merged.json") as f:
+        merged_data = json.load(f)
+
+    IMAGE_SIZE = tuple(info["image_size"])
+
+    VECTOR_CACHE = "outfit_vectors.pkl"
+
+    if os.path.exists(VECTOR_CACHE):
+        with open(VECTOR_CACHE, "rb") as f:
+            outfit_vectors = pickle.load(f)
+    else:
+        st.write("⚙️ Building outfit vectors...")
+
+        outfit_vectors = {}
+
+        for outfit in merged_data:
+            feats = []
+
+            for item in outfit["items"]:
+                item_id = item["item_id"]
+                img_path = f"images/{item_id}.jpg"
+
+                if os.path.exists(img_path):
+                    try:
+                        img = Image.open(img_path).convert("RGB")
+                        feat = extract_visual_features(img, IMAGE_SIZE)
+                        feats.append(feat)
+                    except:
+                        continue
+
+            if feats:
+                visual_vec = np.mean(feats, axis=0).reshape(1, -1)
+                tfidf_vec = tfidf.transform([""]).toarray()
+
+                combined = np.concatenate([visual_vec, tfidf_vec], axis=1)
+                scaled = scaler.transform(combined)
+                reduced = pca.transform(scaled)
+
+                outfit_vectors[outfit["set_id"]] = reduced[0]
+
+        with open(VECTOR_CACHE, "wb") as f:
+            pickle.dump(outfit_vectors, f)
+
+    return gmm, scaler, pca, tfidf, IMAGE_SIZE, merged_data, outfit_vectors
+
+
+gmm, scaler, pca, tfidf, IMAGE_SIZE, merged_data, outfit_vectors = load_data()
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+if "shown_outfits" not in st.session_state:
+    st.session_state.shown_outfits = set()
+
+# ============================================================
+# MODEL
+# ============================================================
+
+def predict_cluster_and_vector(images):
+    feats = [extract_visual_features(img, IMAGE_SIZE) for img in images]
+    visual_vec = np.mean(feats, axis=0).reshape(1, -1)
+
     tfidf_vec = tfidf.transform([""]).toarray()
-
-    # Combine visual + TF-IDF
     combined = np.concatenate([visual_vec, tfidf_vec], axis=1)
 
-    # Scale → PCA → GMM predict
-    scaled    = scaler.transform(combined)
-    reduced   = pca.transform(scaled)
-    cluster   = int(gmm.predict(reduced)[0])
-    probs     = gmm.predict_proba(reduced)[0]
+    scaled = scaler.transform(combined)
+    reduced = pca.transform(scaled)
 
-    return cluster, probs
+    cluster = int(gmm.predict(reduced)[0])
+    return cluster, reduced[0]
 
 # ============================================================
-# SIMILAR OUTFITS FROM CLUSTER RESULTS
+# RECOMMENDER (HYBRID)
 # ============================================================
 
-def get_similar_outfit_ids(cluster_id: int, top_n: int = 5) -> list:
-    """
-    Returns set_ids of outfits assigned to the predicted cluster
-    from the training data — used to show similar style examples.
-    """
-    matching = [
-        r["set_id"] for r in cluster_results
-        if r["gmm"] == cluster_id
+def get_similar_outfits(cluster_id, user_vector, shown_ids, top_n=10):
+
+    candidates = [
+        o for o in merged_data
+        if o["gmm_cluster"] == cluster_id
+        and o["set_id"] in outfit_vectors
     ]
-    # Return a random sample so results vary each time
-    rng = np.random.default_rng()
-    sample_size = min(top_n, len(matching))
-    return list(rng.choice(matching, size=sample_size, replace=False))
+
+    if not candidates:
+        candidates = [o for o in merged_data if o["gmm_cluster"] == cluster_id]
+
+    if not candidates:
+        candidates = merged_data
+
+    unseen = [o for o in candidates if o["set_id"] not in shown_ids]
+
+    if not unseen:
+        st.session_state.shown_outfits.clear()
+        unseen = candidates
+
+    ranked = []
+
+    for outfit in unseen:
+        sid = outfit["set_id"]
+        if sid in outfit_vectors:
+            dist = np.linalg.norm(user_vector - outfit_vectors[sid])
+            ranked.append((dist, outfit))
+
+    if ranked:
+        ranked.sort(key=lambda x: x[0])
+        return [o for _, o in ranked[:top_n]]
+
+    return random.sample(unseen, min(top_n, len(unseen)))
 
 # ============================================================
-# UI — HEADER
+# UI HEADER
 # ============================================================
 
-st.title("👗 Outfit Style Finder")
-st.markdown(
-    "Upload your clothing items and discover which **style group** "
-    "your outfit belongs to. Powered by GMM clustering trained on "
-    "the Polyvore fashion dataset."
+st.markdown("""
+<div class="hero-wrap">
+    <div class="logo-lockup">
+        <div class="logo-icon">✦</div>
+        <div class="logo-wordmark">Fit<em>Board</em></div>
+    </div>
+    <div class="hero-tagline">Discover outfits that match your vibe</div>
+    <div class="hero-divider"></div>
+</div>
+""", unsafe_allow_html=True)
+
+# ============================================================
+# UPLOAD
+# ============================================================
+
+st.markdown('<div class="section-label">✦ &nbsp; Upload Your Pieces</div>', unsafe_allow_html=True)
+
+uploaded_files = st.file_uploader(
+    "Drop your outfit images here — up to 6 pieces",
+    type=["jpg", "png", "jpeg", "webp"],
+    accept_multiple_files=True,
+    label_visibility="visible"
 )
-st.divider()
 
 # ============================================================
-# UI — FILE UPLOAD
+# MAIN
 # ============================================================
 
-col_upload, col_info = st.columns([2, 1])
-
-with col_upload:
-    st.subheader("📤 Upload Your Outfit Items")
-    st.caption(
-        "Upload 1–6 images of individual clothing or accessory items "
-        "(top, pants, shoes, bag, etc.). Each image = one item."
-    )
-    uploaded_files = st.file_uploader(
-        "Choose item images",
-        type=["jpg", "jpeg", "png", "webp"],
-        accept_multiple_files=True,
-        help="Upload up to 6 clothing item images."
-    )
-
-with col_info:
-    st.subheader("ℹ️ How It Works")
-    st.markdown("""
-    1. Upload your clothing item images
-    2. The app extracts **color**, **HSV**, and **texture** features
-    3. Features are scaled and reduced with **PCA**
-    4. **GMM** predicts your outfit's style cluster
-    5. Similar outfits from the same cluster are shown
-    """)
-
 # ============================================================
-# UI — PREVIEW UPLOADED ITEMS
+# MAIN
 # ============================================================
 
 if uploaded_files:
-    if len(uploaded_files) > 6:
-        st.warning("Please upload a maximum of 6 items. Only the first 6 will be used.")
-        uploaded_files = uploaded_files[:6]
+    uploaded_files = uploaded_files[:6]
 
-    st.divider()
-    st.subheader("🧺 Your Outfit Items")
+    st.markdown('<div class="section-label">✦ &nbsp; Your Outfit</div>', unsafe_allow_html=True)
 
-    # Show uploaded items in a row
     cols = st.columns(len(uploaded_files))
     pil_images = []
 
-    for i, (col, f) in enumerate(zip(cols, uploaded_files)):
+    for col, f in zip(cols, uploaded_files):
         img = Image.open(f).convert("RGB")
         pil_images.append(img)
-        with col:
-            st.image(img, caption=f"Item {i + 1}", use_column_width=True)
+        col.image(img, use_container_width=True)
 
-    st.divider()
+    cluster_id, user_vector = predict_cluster_and_vector(pil_images)
 
-    # ============================================================
-    # PREDICTION
-    # ============================================================
-
-    with st.spinner("Analyzing your outfit..."):
-        cluster_id, probs = predict_cluster(pil_images)
-
-    label, description = CLUSTER_LABELS.get(
-        cluster_id, (f"Style Group {cluster_id}", "")
-    )
-    confidence = float(probs[cluster_id]) * 100
-
-    # ============================================================
-    # UI — RESULT
-    # ============================================================
-
-    st.subheader("🎯 Your Style Prediction")
-
-    res_col, conf_col = st.columns([2, 1])
-
-    with res_col:
-        st.markdown(f"## {label}")
-        st.markdown(f"*{description}*")
-
-    with conf_col:
-        st.metric(
-            label="GMM Confidence",
-            value=f"{confidence:.1f}%",
-            help="How strongly GMM assigns your outfit to this cluster."
-        )
-
-    # Probability bar chart for all clusters
-    st.markdown("**Cluster probability breakdown:**")
-    prob_cols = st.columns(N_CLUSTERS)
-    for cid, (pcol, prob) in enumerate(zip(prob_cols, probs)):
-        lbl, _ = CLUSTER_LABELS.get(cid, (f"Cluster {cid}", ""))
-        with pcol:
-            st.metric(label=lbl, value=f"{prob * 100:.1f}%")
-            st.progress(float(prob))
-
-    st.divider()
-
-    # ============================================================
-    # UI — SIMILAR OUTFITS FROM TRAINING DATA
-    # ============================================================
-
-    st.subheader("👀 Similar Outfits from This Style Group")
-    st.caption(
-        f"These are real Polyvore outfits that were clustered into "
-        f"**{label}** during training. "
-        f"Set IDs are shown for reference."
+    st.markdown(
+        f'<div style="text-align:center">'
+        f'<span class="cluster-badge">✦ &nbsp; Style Profile · Cluster {cluster_id}</span>'
+        f'</div>',
+        unsafe_allow_html=True
     )
 
-    similar_ids = get_similar_outfit_ids(cluster_id, top_n=5)
+    st.markdown('<div class="section-label">✦ &nbsp; Mood Board</div>', unsafe_allow_html=True)
 
-    if similar_ids:
-        id_cols = st.columns(len(similar_ids))
-        for col, sid in zip(id_cols, similar_ids):
-            with col:
-                st.markdown(
-                    f"<div style='text-align:center; padding:12px; "
-                    f"background:#f0f0f0; border-radius:8px; "
-                    f"font-size:12px; color:#333;'>"
-                    f"📦 Outfit<br><b>{sid}</b></div>",
-                    unsafe_allow_html=True
-                )
-        st.caption(
-            "💡 To see the actual outfit images, look up these set IDs "
-            "in your cluster_outfit_samples.png visualization."
-        )
+    btn_col, _ = st.columns([1, 5])
+    with btn_col:
+        if st.button("↻  Refresh"):
+            st.rerun()
+
+    outfits = get_similar_outfits(
+        cluster_id,
+        user_vector,
+        st.session_state.shown_outfits
+    )
+
+    if not outfits:
+        st.warning("No outfits available right now.")
     else:
-        st.info("No similar outfits found for this cluster.")
+        for outfit in outfits:
+            st.session_state.shown_outfits.add(outfit["set_id"])
 
-    st.divider()
+        grid_cols = st.columns(4)
 
-    # ============================================================
-    # UI — ALL CLUSTER OVERVIEW
-    # ============================================================
+        for i, outfit in enumerate(outfits):
+            col = grid_cols[i % 4]
+            with col:
+                title = outfit["outfit"]["title"] if outfit["outfit"] else "Untitled"
+                item_count = len(outfit["items"])
 
-    with st.expander("📊 View All Style Clusters"):
-        for cid in range(N_CLUSTERS):
-            lbl, desc = CLUSTER_LABELS.get(cid, (f"Cluster {cid}", ""))
-            count = sum(1 for r in cluster_results if r["gmm"] == cid)
-            highlight = "🔵 " if cid == cluster_id else ""
-            st.markdown(
-                f"**{highlight}{lbl}** — {count:,} outfits in training data  \n"
-                f"*{desc}*"
-            )
+                # ── Card header ──
+                header_html = (
+                    f'<div class="outfit-card">'
+                    f'  <div class="outfit-card-header">'
+                    f'    <div class="outfit-card-title">{title}</div>'
+                    f'    <div class="outfit-card-num">{item_count} pieces</div>'
+                    f'  </div>'
+                    f'  <div class="items-strip" id="strip-{i}">'
+                )
+
+                items_html = ""
+                for item in sorted(outfit["items"], key=lambda x: x["index"]):
+                    item_id   = item["item_id"]
+                    metadata  = item["metadata"]
+                    img_path  = f"images/{item_id}.jpg"
+                    cat_label = (metadata.get("semantic_category", "") if metadata else "").strip()
+
+                    if os.path.exists(img_path):
+                        # Encode image as base64 for inline rendering
+                        import base64
+                        with open(img_path, "rb") as img_f:
+                            b64 = base64.b64encode(img_f.read()).decode()
+                        items_html += (
+                            f'<div class="item-tile">'
+                            f'  <img src="data:image/jpeg;base64,{b64}" />'
+                            f'  <div class="item-tag">{cat_label}</div>'
+                            f'</div>'
+                        )
+
+                footer_html = '</div></div>'  # close items-strip + outfit-card
+
+                st.markdown(header_html + items_html + footer_html, unsafe_allow_html=True)
+
+    st.markdown('<div class="footer">FitBoard &nbsp;·&nbsp; Style Intelligence</div>', unsafe_allow_html=True)
 
 else:
-    # ---- Empty state ----
-    st.info("👆 Upload your outfit item images above to get started.")
-
-    st.divider()
-    st.subheader("📊 Style Clusters Overview")
-    st.caption("These are the style groups learned from 5,000 Polyvore outfits.")
-
-    for cid in range(N_CLUSTERS):
-        lbl, desc = CLUSTER_LABELS.get(cid, (f"Cluster {cid}", ""))
-        count = sum(1 for r in cluster_results if r["gmm"] == cid)
-        st.markdown(f"**{lbl}** — {count:,} outfits  \n*{desc}*")
-        st.divider()
-
-# ============================================================
-# FOOTER
-# ============================================================
-
-st.markdown(
-    "<div style='text-align:center; color:#888; font-size:12px; margin-top:40px;'>"
-    "Outfit Style Finder · GMM Clustering · Polyvore Dataset · PTF30 Final Project"
-    "</div>",
-    unsafe_allow_html=True
-)
+    st.markdown("""
+    <div style="
+        text-align:center;
+        padding: 64px 0 48px;
+        color: #444;
+        font-size: 13px;
+        letter-spacing: 1.5px;
+        text-transform: uppercase;
+    ">
+        Upload outfit images above to generate your FitBoard ✦
+    </div>
+    """, unsafe_allow_html=True)
