@@ -45,29 +45,25 @@ def load_models():
         info = json.load(f)
     with open("cluster_results.json") as f:
         cluster_results = json.load(f)
-    return gmm, scaler, pca, tfidf, info, cluster_results
+        
+    try:
+        with open("polyvore_outfit_titles.json", "r") as f:
+            outfit_titles = json.load(f)
+    except FileNotFoundError:
+        outfit_titles = {}
 
-gmm, scaler, pca, tfidf, info, cluster_results = load_models()
+    try:
+        with open("polyvore_item_metadata.json", "r") as f:
+            item_metadata = json.load(f)
+    except FileNotFoundError:
+        item_metadata = {}
+        
+    return gmm, scaler, pca, tfidf, info, cluster_results, outfit_titles, item_metadata
+
+gmm, scaler, pca, tfidf, info, cluster_results, outfit_titles, item_metadata = load_models()
 
 N_CLUSTERS = info["n_clusters"]
 IMAGE_SIZE = tuple(info["image_size"])
-
-# ============================================================
-# CLUSTER LABELS
-# Descriptive names for each cluster.
-# Update these after inspecting your cluster_outfit_samples.png
-# to give each cluster a meaningful style name.
-# ============================================================
-
-CLUSTER_LABELS = {
-    0: ("🌸 Soft & Feminine",    "Outfits with soft colors, floral patterns, and delicate accessories."),
-    1: ("🖤 Bold & Edgy",        "Dark tones, structured pieces, and statement accessories."),
-    2: ("☀️ Casual & Relaxed",   "Comfortable everyday wear with neutral or warm color palettes."),
-}
-
-# Fallback for N_CLUSTERS > 3
-for i in range(3, N_CLUSTERS):
-    CLUSTER_LABELS[i] = (f"✨ Style Group {i}", f"Cluster {i} outfits.")
 
 # ============================================================
 # FEATURE EXTRACTION — must match training exactly
@@ -222,22 +218,19 @@ if uploaded_files:
     with st.spinner("Analyzing your outfit..."):
         cluster_id, probs = predict_cluster(pil_images)
 
-    label, description = CLUSTER_LABELS.get(
-        cluster_id, (f"Style Group {cluster_id}", "")
-    )
     confidence = float(probs[cluster_id]) * 100
 
     # ============================================================
     # UI — RESULT
     # ============================================================
 
-    st.subheader("🎯 Your Style Prediction")
+    st.subheader("🎯 Analysis Complete")
 
     res_col, conf_col = st.columns([2, 1])
 
     with res_col:
-        st.markdown(f"## {label}")
-        st.markdown(f"*{description}*")
+        st.markdown(f"## Outfit Matches Cluster {cluster_id}")
+        st.markdown("*Based on visual features, we found similar outfits from this group.*")
 
     with conf_col:
         st.metric(
@@ -246,77 +239,62 @@ if uploaded_files:
             help="How strongly GMM assigns your outfit to this cluster."
         )
 
-    # Probability bar chart for all clusters
-    st.markdown("**Cluster probability breakdown:**")
-    prob_cols = st.columns(N_CLUSTERS)
-    for cid, (pcol, prob) in enumerate(zip(prob_cols, probs)):
-        lbl, _ = CLUSTER_LABELS.get(cid, (f"Cluster {cid}", ""))
-        with pcol:
-            st.metric(label=lbl, value=f"{prob * 100:.1f}%")
-            st.progress(float(prob))
-
     st.divider()
 
     # ============================================================
     # UI — SIMILAR OUTFITS FROM TRAINING DATA
     # ============================================================
 
-    st.subheader("👀 Similar Outfits from This Style Group")
+    st.subheader("👀 Similar Outfits")
     st.caption(
         f"These are real Polyvore outfits that were clustered into "
-        f"**{label}** during training. "
-        f"Set IDs are shown for reference."
+        f"**Cluster {cluster_id}** during training. "
     )
 
     similar_ids = get_similar_outfit_ids(cluster_id, top_n=5)
 
     if similar_ids:
-        id_cols = st.columns(len(similar_ids))
-        for col, sid in zip(id_cols, similar_ids):
-            with col:
-                st.markdown(
-                    f"<div style='text-align:center; padding:12px; "
-                    f"background:#f0f0f0; border-radius:8px; "
-                    f"font-size:12px; color:#333;'>"
-                    f"📦 Outfit<br><b>{sid}</b></div>",
-                    unsafe_allow_html=True
-                )
-        st.caption(
-            "💡 To see the actual outfit images, look up these set IDs "
-            "in your cluster_outfit_samples.png visualization."
-        )
+        for sid in similar_ids:
+            with st.container():
+                st.markdown(f"### Outfit: {sid}")
+                
+                # Try to get outfit title
+                outfit_info = outfit_titles.get(str(sid))
+                title = f"Outfit {sid}"
+                items = []
+                if isinstance(outfit_info, dict):
+                    title = outfit_info.get("title", title)
+                    items = outfit_info.get("items", [])
+                elif isinstance(outfit_info, str):
+                    title = outfit_info
+                
+                st.markdown(f"**Title:** {title}")
+                
+                # If we have items associated with this outfit, show them
+                if items:
+                    st.markdown("**Items in this outfit:**")
+                    for item_id in items:
+                        item_data = item_metadata.get(str(item_id), {})
+                        url_name = item_data.get("url_name", f"Item {item_id}")
+                        
+                        # Generate Image Search Link
+                        search_query = url_name.replace(" ", "+")
+                        search_url = f"https://www.google.com/search?tbm=isch&q={search_query}"
+                        
+                        st.markdown(f"- **{url_name}** | [🔍 Find Similar/Buy]({search_url})")
+                else:
+                    # Provide a generic search based on the outfit title if items are not available
+                    search_query = title.replace(" ", "+")
+                    search_url = f"https://www.google.com/search?tbm=isch&q={search_query}"
+                    st.markdown(f"[🔍 Find Similar Outfits]({search_url})")
+                
+                st.divider()
     else:
         st.info("No similar outfits found for this cluster.")
-
-    st.divider()
-
-    # ============================================================
-    # UI — ALL CLUSTER OVERVIEW
-    # ============================================================
-
-    with st.expander("📊 View All Style Clusters"):
-        for cid in range(N_CLUSTERS):
-            lbl, desc = CLUSTER_LABELS.get(cid, (f"Cluster {cid}", ""))
-            count = sum(1 for r in cluster_results if r["gmm"] == cid)
-            highlight = "🔵 " if cid == cluster_id else ""
-            st.markdown(
-                f"**{highlight}{lbl}** — {count:,} outfits in training data  \n"
-                f"*{desc}*"
-            )
 
 else:
     # ---- Empty state ----
     st.info("👆 Upload your outfit item images above to get started.")
-
-    st.divider()
-    st.subheader("📊 Style Clusters Overview")
-    st.caption("These are the style groups learned from 5,000 Polyvore outfits.")
-
-    for cid in range(N_CLUSTERS):
-        lbl, desc = CLUSTER_LABELS.get(cid, (f"Cluster {cid}", ""))
-        count = sum(1 for r in cluster_results if r["gmm"] == cid)
-        st.markdown(f"**{lbl}** — {count:,} outfits  \n*{desc}*")
-        st.divider()
 
 # ============================================================
 # FOOTER
